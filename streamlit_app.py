@@ -79,7 +79,7 @@ def load_memory():
 st.title("Inventory Agent — Streamlit UI")
 
 # Sidebar: pages + DB actions
-page = st.sidebar.radio("Page", ["Chat", "History", "Database Query"], index=0)
+page = st.sidebar.radio("Page", ["Chat", "Database Query"], index=0)
 
 st.markdown("---")
 
@@ -128,9 +128,7 @@ with st.sidebar.expander("Database"):
             json.dump(new_mem, f, indent=2)
         st.success("Saved DB snapshot to memory.json")
     
-    if st.button("Clear Chat History"):
-        st.session_state.history = []
-        st.rerun()
+    # Chat history removed by request; no Clear Chat History button.
 
     st.markdown("---")
     st.subheader("Export")
@@ -167,11 +165,7 @@ if "include_db" not in st.session_state:
 # read the persisted value (set by the Database expander checkbox)
 include_db = st.session_state.get("include_db", False)
 
-# Ensure history exists in session state (persistent across reruns)
-if "history" not in st.session_state:
-    st.session_state.history = []
-
-# Ensure messages exists in session state (persistent across reruns)
+# Session state for messages (kept minimal)
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
 
@@ -211,13 +205,6 @@ def answer_inventory_query(user_text: str) -> str | None:
 if page == "Chat":
     st.header("Agent Chat")
     
-    # Display chat history
-    for msg in st.session_state.history:
-        with st.chat_message("user"):
-            st.write(msg["user"])
-        with st.chat_message("assistant"):
-            st.write(msg["assistant"])
-
     if user_input := st.chat_input("Ask a question about inventory..."):
         with st.chat_message("user"):
             st.write(user_input)
@@ -265,7 +252,7 @@ if page == "Chat":
         with st.chat_message("assistant"):
             st.write(assistant)
 
-        st.session_state.history.append({"user": user_input, "assistant": assistant})
+        # history storage removed; we still display the current exchange in chat
 
 elif page == "History":
     st.header("Chat History")
