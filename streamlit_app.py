@@ -169,7 +169,11 @@ include_db = st.session_state.get("include_db", False)
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
 
-def is_db_related(text: str) -> bool:
+def is_greeting(text: str) -> bool:
+    """Return True if the text appears to be a greeting."""
+    t = text.lower().strip()
+    greetings = ("hi", "hello", "hey", "greetings", "good morning", "good afternoon", "good evening", "hi there", "hello there")
+    return any(g in t for g in greetings) and len(t.split()) <= 3  # Simple heuristic to avoid false positives
     """Return True when the user text is clearly about the database/tables/queries."""
     t = text.lower()
     keywords = ("stock", "inventory", "how much", "how many", "quantity", "on hand", "in stock", "available", "sku", "select", "from", "table", "amas", "imas", "sale", "prch", "prod", "order", "sitm", "tmas", "customers", "inventory")
@@ -230,7 +234,27 @@ if page == "Chat":
             st.write(user_input)
 
         assistant = ""
-        if not is_db_related(user_input):
+        # Check for greetings
+        if is_greeting(user_input):
+            assistant = "Hello! I'm an inventory assistant with knowledge of our database.\n\n"
+            assistant += "In this UI, you can ask questions about inventory data, and I can help with database queries.\n\n"
+            assistant += "Knowledge I possess:\n"
+            try:
+                conn = get_conn()
+                cur = conn.cursor()
+                schema_info = []
+                cur.execute("SELECT name FROM sqlite_master WHERE type='table';")
+                tables = [row[0] for row in cur.fetchall() if row[0] not in ('sqlite_sequence',)]
+                for tbl in tables:
+                    cur.execute(f"PRAGMA table_info({tbl})")
+                    cols = [f"{col[1]} ({col[2]})" for col in cur.fetchall()]
+                    schema_info.append(f"- {tbl}: {', '.join(cols)}")
+                conn.close()
+                assistant += "I have access to a SQLite database with the following tables:\n" + "\n".join(schema_info)
+            except Exception as e:
+                assistant += f"I have access to a SQLite database with inventory data (tables like AMAS, IMAS, etc.). Error retrieving schema: {e}"
+            assistant += "\n\nI can answer questions about stock, inventory, quantities, and help execute SQL queries on the database."
+        elif not is_db_related(user_input):
             assistant = "I can only answer questions about the database; please ask about data or request a SQL query."
         else:
             with st.spinner("Loading — waiting for response..."):

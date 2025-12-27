@@ -186,6 +186,13 @@ def chat_with_openai(messages: List[Dict], model: str, client: OpenAI):
         return resp.choices[0].message["content"]
 
 
+def is_greeting(text: str) -> bool:
+    """Return True if the text appears to be a greeting."""
+    t = text.lower().strip()
+    greetings = ("hi", "hello", "hey", "greetings", "good morning", "good afternoon", "good evening", "hi there", "hello there")
+    return any(g in t for g in greetings) and len(t.split()) <= 3  # Simple heuristic to avoid false positives
+
+
 def print_help():
     print("Commands:")
     print("  /exit         - exit the agent")
@@ -262,6 +269,24 @@ def main():
             break
 
         if not user_in:
+            continue
+
+        # Check for greetings
+        if is_greeting(user_in):
+            print("Assistant: Hello! I'm an inventory assistant with knowledge of our database.")
+            print("Commands I understand:")
+            print("  /exit         - exit the agent")
+            print("  /history      - show saved conversation history")
+            print("  /save         - save conversation to memory.json")
+            print("  /system TEXT  - set a system instruction")
+            print("  /model NAME   - change model for this session")
+            print("  /help         - show this help")
+            print("\nKnowledge I possess:")
+            if db_schema:
+                print(f"I have access to a SQLite database with the following schema:\n{db_schema}")
+            else:
+                print("I have access to a SQLite database with inventory data (tables like AMAS, IMAS, etc.).")
+            print("I can answer questions about stock, inventory, quantities, and execute SQL queries on the database.")
             continue
 
         if user_in.startswith("/"):
