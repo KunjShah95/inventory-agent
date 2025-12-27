@@ -78,20 +78,35 @@ You can manage the SQLite database directly using the helper script.
 
 ```bash
 # Initialize the database (create tables)
-python db_Tool.py --init
+python db_tool.py --init
 
 # Add sample data (only if empty)
-python db_Tool.py --add-sample-data
+python db_tool.py --add-sample-data
 
 # Upsert sample data (update existing, insert new)
-python db_Tool.py --add-sample-data-upsert
+python db_tool.py --add-sample-data-upsert
+
+# Convert all .DBF files in the data/ directory into SQLite tables
+python db_tool.py --convert-dbf
 
 # Run a custom SQL query
-python db_Tool.py --query "SELECT * FROM inventory"
+python db_tool.py --query "SELECT * FROM inventory"
 
 # Fetch all rows from a table
-python db_Tool.py --fetch-all customers
-```
+python db_tool.py --fetch-all customers
+
+```text
+Note: The Streamlit UI also includes a **Convert DBF to SQLite** button in the Database controls that runs the same conversion command.
+
+### Agent restrictions and safety
+
+- The AI agent is intentionally restricted to the project's SQLite database. It only answers questions about tables and data present in the database.
+- This enforcement is implemented both by code (keyword and schema checks in `main.py`) and by a system prompt instructing the model to only use the database as its source of truth.
+- If a user asks about anything outside the database (world knowledge, opinions, or unrelated topics), the agent will politely refuse with: 
+
+  "I can only answer questions about the database; please ask about data or request a SQL query."
+
+- To relax or modify this behavior, edit the system prompt in `main.py` or set the `AGENT_SYSTEM_PROMPT` environment variable.
 
 ## Project Structure
 

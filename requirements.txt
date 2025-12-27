@@ -2,3 +2,4 @@ openai>=1.0.0
 python-dotenv
 flask
 streamlit
+dbfread>=2.0.7

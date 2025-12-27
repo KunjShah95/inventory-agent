@@ -14,7 +14,7 @@ try:
     from db_Tool import init_db, add_sample_data, fetch_all_table, run_query, DB_PATH
 except Exception:
     try:
-        from db_tool import init_db, add_sample_data, fetch_all_table, run_query, DB_PATH
+        from db_Tool import init_db, add_sample_data, fetch_all_table, run_query, DB_PATH
     except Exception:
         init_db = add_sample_data = fetch_all_table = run_query = None
         DB_PATH = None
@@ -83,16 +83,16 @@ def query_inventory(sku: str = None):
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
         if sku:
-            cur.execute("SELECT * FROM inventory WHERE sku = ?", (sku,))
+            cur.execute("SELECT * FROM IMAS WHERE ICIMAS = ?", (sku,))
         else:
-            cur.execute("SELECT * FROM inventory")
+            cur.execute("SELECT * FROM IMAS")
         rows = cur.fetchall()
         conn.close()
         if not rows:
             return "No inventory found."
         result = "Inventory:\n"
         for row in rows:
-            result += f"SKU: {row[1]}, Name: {row[2]}, Quantity: {row[3]}, Location: {row[4]}\n"
+            result += f"SKU: {row[1]}, Name: {row[2]}, Quantity: {row[7]}\n"  # ICIMAS, IALIAS, OSTQTY
         return result
     except Exception as e:
         return f"Error querying inventory: {e}"
@@ -103,7 +103,7 @@ def answer_inventory_query(user_text: str) -> str | None:
     Return None when the handler decides it should not handle the question.
     """
     lower = user_text.lower()
-    keywords = ("stock", "inventory", "how much", "how many", "quantity", "on hand", "in stock", "available")
+    keywords = ("stock", "inventory", "how much", "how many", "quantity", "on hand", "in stock", "available", "sku")
     if not any(k in lower for k in keywords):
         return None
 
@@ -111,24 +111,30 @@ def answer_inventory_query(user_text: str) -> str | None:
         return "I'm sorry, but I can't access the inventory database right now. Please contact support if this continues."
 
     try:
+        # Try to extract a SKU if mentioned (simple heuristic)
+        import re
+        m = re.search(r"sku\s*[:=]?\s*([\w-]+)", user_text, re.IGNORECASE)
+        if m:
+            sku = m.group(1)
+            return query_inventory(sku=sku)
+
         conn = sqlite3.connect(str(DB_PATH))
         cur = conn.cursor()
-        # Total quantity across inventory
-        cur.execute("SELECT SUM(quantity) FROM inventory")
-        total = cur.fetchone()[0]
-        if total is None:
-            total = 0
 
-        # Top 8 items by quantity
-        cur.execute("SELECT id, name, sku, quantity FROM inventory ORDER BY quantity DESC LIMIT 8")
+        # Total quantity across inventory
+        cur.execute("SELECT SUM(OSTQTY) FROM IMAS")
+        total = cur.fetchone()[0] or 0
+
+        # Top items by quantity
+        cur.execute("SELECT ICIMAS, IALIAS, OSTQTY FROM IMAS ORDER BY OSTQTY DESC LIMIT 8")
         rows = cur.fetchall()
 
         # Low-stock items (quantity <= 10)
-        cur.execute("SELECT id, name, sku, quantity FROM inventory WHERE quantity <= 10 ORDER BY quantity ASC LIMIT 8")
+        cur.execute("SELECT ICIMAS, IALIAS, OSTQTY FROM IMAS WHERE OSTQTY <= 10 ORDER BY OSTQTY ASC LIMIT 8")
         low = cur.fetchall()
         conn.close()
-    except Exception as e:
-        return f"I'm having trouble checking our inventory right now. Please try again later or contact support."
+    except Exception:
+        return "I'm having trouble checking our inventory right now. Please try again later or contact support."
 
     # Natural language response
     response = f"We currently have a total of {total} items in stock across all products."
@@ -136,17 +142,39 @@ def answer_inventory_query(user_text: str) -> str | None:
     if rows:
         response += " Our best-stocked items are:"
         for r in rows[:3]:  # Limit to top 3 for brevity
-            response += f" {r[1]} with {r[3]} units,"
+            response += f" {r[1]} with {r[2]} units,"
         response = response.rstrip(',') + "."
 
     if low:
         response += " We do have some items running low:"
         for r in low[:3]:  # Limit to top 3 low-stock
-            response += f" {r[1]} with only {r[3]} units left,"
+            response += f" {r[1]} with only {r[2]} units left,"
         response = response.rstrip(',') + ". We should restock these soon."
 
     response += " If you need details on a specific product or want to check availability, just let me know!"
     return response
+
+
+def is_db_related(text: str) -> bool:
+    """Return True when the user text is clearly about the database/tables/queries."""
+    t = text.lower()
+    keywords = ("stock", "inventory", "how much", "how many", "quantity", "on hand", "in stock", "available", "sku", "select", "from", "table", "amas", "imas", "sale", "prch", "prod", "order", "sitm", "tmas", "customers", "inventory")
+    if any(k in t for k in keywords):
+        return True
+    # check for table names present in DB
+    if DB_PATH is None:
+        return False
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        tables = [row[0].lower() for row in cur.fetchall()]
+        conn.close()
+        if any(tbl in t for tbl in tables):
+            return True
+    except Exception:
+        pass
+    return False
 
 def chat_with_openai(messages: List[Dict], model: str, client: OpenAI):
     # Uses the new OpenAI Python client: client.chat.completions.create
@@ -168,6 +196,24 @@ def print_help():
     print("  /help         - show this help")
 
 
+def get_db_schema() -> str:
+    if DB_PATH is None or not os.path.exists(str(DB_PATH)):
+        return ""
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        tables = [row[0] for row in cur.fetchall() if row[0] not in ('sqlite_sequence',)]
+        schema_info = "Available database tables:\n"
+        for table in tables:
+            cur.execute(f"PRAGMA table_info({table})")
+            cols = [f"{col[1]} ({col[2]})" for col in cur.fetchall()]
+            schema_info += f"- {table}: {', '.join(cols)}\n"
+        conn.close()
+        return schema_info
+    except Exception as e:
+        return f"Error retrieving schema: {e}"
+
 def main():
     ensure_deps_available()
     load_env()
@@ -184,7 +230,19 @@ def main():
     if memory:
         print(f"Loaded {len(memory)} saved messages from {PROJECT_MEMORY}")
 
-    system_prompt = os.environ.get("AGENT_SYSTEM_PROMPT", "You are a helpful assistant.")
+    db_schema = get_db_schema()
+    base_system_prompt = os.environ.get("AGENT_SYSTEM_PROMPT", "You are a helpful assistant.")
+    if db_schema:
+        system_prompt = (
+            f"{base_system_prompt}\n\nYou have access to a SQLite database with the following schema:\n{db_schema}\n\n"
+            "Only answer user questions using the database schema and the data contained therein. If the user asks about anything outside the database (world knowledge, opinions, or unrelated topics), politely refuse with the phrase:\n"
+            '"I can only answer questions about the database; please ask about data or request a SQL query."\n\n'
+            "If you need to run a query, either execute it against the database or describe the exact SQL you would use, and only return results actually present in the database. Do not hallucinate or invent facts."
+        )
+    else:
+        system_prompt = (
+            f"{base_system_prompt}\n\nOnly answer user questions about the project's SQLite database. If the user asks about anything outside the database, politely refuse with: \"I can only answer questions about the database; please ask about data or request a SQL query.\""
+        )
 
     messages = []
     if system_prompt:
@@ -248,6 +306,14 @@ def main():
             continue
 
         # regular user message
+        # Enforce DB-only responses: refuse unrelated questions
+        if not is_db_related(user_in):
+            refusal = "I can only answer questions about the database; please ask about data or request a SQL query."
+            print("Assistant:", refusal)
+            messages.append({"role": "user", "content": user_in})
+            messages.append({"role": "assistant", "content": refusal})
+            continue
+
         # First, check if this looks like an inventory/stock question and answer from DB directly
         db_answer = answer_inventory_query(user_in)
         if db_answer is not None:

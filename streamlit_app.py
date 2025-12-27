@@ -14,7 +14,7 @@ except Exception:
 # Set page config immediately after importing Streamlit
 st.set_page_config(page_title="Inventory Agent UI")
 
-DB_PATH = Path("app_data.db")
+DB_PATH = Path("converted.db")
 PROJECT_MEMORY = "memory.json"
 
 
@@ -29,8 +29,8 @@ def build_db_snapshot():
         conn = get_conn()
         cur = conn.cursor()
         parts = []
-        for tbl in ("customers", "inventory"):
-            cur.execute(f"SELECT * FROM {tbl} LIMIT 50")
+        for tbl in ("AMAS", "IMAS"):
+            cur.execute(f"SELECT * FROM \"{tbl}\" LIMIT 50")
             rows = cur.fetchall()
             if rows:
                 parts.append({"table": tbl, "rows": [dict(r) for r in rows]})
@@ -142,18 +142,18 @@ with st.sidebar.expander("Database"):
     )
 
     # Export CSVs for tables
-    cust_csv = export_table_csv("customers")
-    inv_csv = export_table_csv("inventory")
+    amas_csv = export_table_csv("AMAS")
+    imas_csv = export_table_csv("IMAS")
     st.download_button(
-        label="Export customers (CSV)",
-        data=cust_csv,
-        file_name="customers.csv",
+        label="Export AMAS (CSV)",
+        data=amas_csv,
+        file_name="AMAS.csv",
         mime="text/csv",
     )
     st.download_button(
-        label="Export inventory (CSV)",
-        data=inv_csv,
-        file_name="inventory.csv",
+        label="Export IMAS (CSV)",
+        data=imas_csv,
+        file_name="IMAS.csv",
         mime="text/csv",
     )
 
@@ -169,6 +169,26 @@ include_db = st.session_state.get("include_db", False)
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
 
+def is_db_related(text: str) -> bool:
+    """Return True when the user text is clearly about the database/tables/queries."""
+    t = text.lower()
+    keywords = ("stock", "inventory", "how much", "how many", "quantity", "on hand", "in stock", "available", "sku", "select", "from", "table", "amas", "imas", "sale", "prch", "prod", "order", "sitm", "tmas", "customers", "inventory")
+    if any(k in t for k in keywords):
+        return True
+    # check for table names present in DB
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        tables = [row[0].lower() for row in cur.fetchall()]
+        conn.close()
+        if any(tbl in t for tbl in tables):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 # Helper: answer simple inventory queries locally
 def answer_inventory_query(user_text: str) -> str | None:
     lower = user_text.lower()
@@ -180,11 +200,11 @@ def answer_inventory_query(user_text: str) -> str | None:
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT SUM(quantity) FROM inventory")
+        cur.execute("SELECT SUM(OSTQTY) FROM IMAS")
         total = cur.fetchone()[0] or 0
-        cur.execute("SELECT sku, name, quantity FROM inventory ORDER BY quantity DESC LIMIT 8")
+        cur.execute("SELECT ICIMAS, IALIAS, OSTQTY FROM IMAS ORDER BY OSTQTY DESC LIMIT 8")
         top = cur.fetchall()
-        cur.execute("SELECT sku, name, quantity FROM inventory WHERE quantity <= 10 ORDER BY quantity ASC LIMIT 8")
+        cur.execute("SELECT ICIMAS, IALIAS, OSTQTY FROM IMAS WHERE OSTQTY <= 10 ORDER BY OSTQTY ASC LIMIT 8")
         low = cur.fetchall()
         conn.close()
     except Exception as e:
@@ -193,11 +213,11 @@ def answer_inventory_query(user_text: str) -> str | None:
     if top:
         parts.append("Top items by quantity:")
         for r in top:
-            parts.append(f"- {r['name']} (sku={r['sku']}): {r['quantity']}")
+            parts.append(f"- {r['IALIAS']} (sku={r['ICIMAS']}): {r['OSTQTY']}")
     if low:
         parts.append("Low-stock items (<=10):")
         for r in low:
-            parts.append(f"- {r['name']} (sku={r['sku']}): {r['quantity']}")
+            parts.append(f"- {r['IALIAS']} (sku={r['ICIMAS']}): {r['OSTQTY']}")
     parts.append("\n(If you want per-SKU counts, ask 'how many of SKU001' or use the DB query tool.)")
     return "\n".join(parts)
 
@@ -209,45 +229,50 @@ if page == "Chat":
         with st.chat_message("user"):
             st.write(user_input)
 
-        with st.spinner("Loading — waiting for response..."):
-            db_answer = answer_inventory_query(user_input)
-            assistant = ""
-            if db_answer is not None:
-                assistant = db_answer
-            else:
-                key = os.environ.get("OPENAI_API_KEY")
-                if not key:
-                    st.error("OPENAI_API_KEY not set in environment")
+        assistant = ""
+        if not is_db_related(user_input):
+            assistant = "I can only answer questions about the database; please ask about data or request a SQL query."
+        else:
+            with st.spinner("Loading — waiting for response..."):
+                db_answer = answer_inventory_query(user_input)
+                if db_answer is not None:
+                    assistant = db_answer
                 else:
-                    try:
+                    key = os.environ.get("OPENAI_API_KEY")
+                    if not key:
+                        st.error("OPENAI_API_KEY not set in environment")
+                    else:
                         try:
-                            from openai import OpenAI
-                            client = OpenAI(api_key=key)
-                            use_new_sdk = True
-                        except Exception:
-                            import openai
-                            openai.api_key = key
-                            client = openai
-                            use_new_sdk = False
-
-                        msgs = []
-                        if include_db:
-                            snap = build_db_snapshot()
-                            msgs.append({"role": "system", "content": "DB_SNAPSHOT:\n" + snap})
-                        msgs.extend([{"role": "user", "content": user_input}])
-
-                        if use_new_sdk:
-                            resp = client.chat.completions.create(model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"), messages=msgs)
                             try:
-                                assistant = resp.choices[0].message.content
+                                from openai import OpenAI
+                                client = OpenAI(api_key=key)
+                                use_new_sdk = True
                             except Exception:
-                                assistant = resp.choices[0].message["content"]
-                        else:
-                            resp = openai.ChatCompletion.create(model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"), messages=msgs)
-                            assistant = resp.choices[0].message.content
-                    except Exception as e:
-                        st.error(f"OpenAI API error: {e}")
-                        assistant = ""
+                                import openai
+                                openai.api_key = key
+                                client = openai
+                                use_new_sdk = False
+
+                            msgs = []
+                            system_content = "You are a helpful assistant for database queries. Only answer user questions using the database data. If the user asks about anything outside the database, politely refuse with: 'I can only answer questions about the database; please ask about data or request a SQL query.'"
+                            if include_db:
+                                snap = build_db_snapshot()
+                                system_content += f"\n\nDB_SNAPSHOT:\n{snap}"
+                            msgs.append({"role": "system", "content": system_content})
+                            msgs.append({"role": "user", "content": user_input})
+
+                            if use_new_sdk:
+                                resp = client.chat.completions.create(model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"), messages=msgs)
+                                try:
+                                    assistant = resp.choices[0].message.content
+                                except Exception:
+                                    assistant = resp.choices[0].message["content"]
+                            else:
+                                resp = openai.ChatCompletion.create(model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"), messages=msgs)
+                                assistant = resp.choices[0].message.content
+                        except Exception as e:
+                            st.error(f"OpenAI API error: {e}")
+                            assistant = ""
 
         with st.chat_message("assistant"):
             st.write(assistant)
@@ -305,8 +330,8 @@ elif page == "Database Query":
                         conn = get_conn()
                         cur = conn.cursor()
                         schema_info = []
-                        for tbl in ("customers", "inventory"):
-                            cur.execute(f"PRAGMA table_info({tbl})")
+                        for tbl in ("AMAS", "IMAS"):
+                            cur.execute(f"PRAGMA table_info(\"{tbl}\")")
                             columns = cur.fetchall()
                             schema_info.append(f"Table {tbl}: {[col['name'] for col in columns]}")
                         conn.close()
