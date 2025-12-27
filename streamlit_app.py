@@ -174,6 +174,9 @@ def is_greeting(text: str) -> bool:
     t = text.lower().strip()
     greetings = ("hi", "hello", "hey", "greetings", "good morning", "good afternoon", "good evening", "hi there", "hello there")
     return any(g in t for g in greetings) and len(t.split()) <= 3  # Simple heuristic to avoid false positives
+
+
+def is_db_related(text: str) -> bool:
     """Return True when the user text is clearly about the database/tables/queries."""
     t = text.lower()
     keywords = ("stock", "inventory", "how much", "how many", "quantity", "on hand", "in stock", "available", "sku", "select", "from", "table", "amas", "imas", "sale", "prch", "prod", "order", "sitm", "tmas", "customers", "inventory")
@@ -246,7 +249,7 @@ if page == "Chat":
                 cur.execute("SELECT name FROM sqlite_master WHERE type='table';")
                 tables = [row[0] for row in cur.fetchall() if row[0] not in ('sqlite_sequence',)]
                 for tbl in tables:
-                    cur.execute(f"PRAGMA table_info({tbl})")
+                    cur.execute(f'PRAGMA table_info("{tbl}")')
                     cols = [f"{col[1]} ({col[2]})" for col in cur.fetchall()]
                     schema_info.append(f"- {tbl}: {', '.join(cols)}")
                 conn.close()
