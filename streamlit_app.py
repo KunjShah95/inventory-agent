@@ -6,6 +6,10 @@ import csv
 import io
 from pathlib import Path
 try:
+    from business_queries import answer_business_question
+except ImportError:
+    answer_business_question = lambda _: None  # type: ignore[assignment]
+try:
     from dotenv import load_dotenv
     load_dotenv()
 except Exception:
@@ -76,10 +80,46 @@ def load_memory():
             return []
 
 
+def get_table_names() -> list[str]:
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';")
+        tables = [row[0] for row in cur.fetchall()]
+        conn.close()
+        return tables
+    except Exception:
+        return []
+
+
+def get_table_schema(table_name: str) -> list[str]:
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(f'PRAGMA table_info("{table_name}")')
+        schema = [f"{row['name']} ({row['type']})" for row in cur.fetchall()]
+        conn.close()
+        return schema
+    except Exception:
+        return []
+
+
+def fetch_table_rows(table_name: str, limit: int = 20, where_clause: str = ""):
+    conn = get_conn()
+    cur = conn.cursor()
+    clause = f" WHERE {where_clause}" if where_clause.strip() else ""
+    query = f"SELECT * FROM \"{table_name}\"{clause} LIMIT {limit}"
+    cur.execute(query)
+    rows = cur.fetchall()
+    columns = [desc[0] for desc in cur.description]
+    conn.close()
+    return columns, rows
+
+
 st.title("Inventory Agent — Streamlit UI")
 
 # Sidebar: pages + DB actions
-page = st.sidebar.radio("Page", ["Chat", "Database Query"], index=0)
+page = st.sidebar.radio("Page", ["Chat", "Explore Data", "Database Query"], index=0)
 
 st.markdown("---")
 
@@ -257,49 +297,53 @@ if page == "Chat":
             except Exception as e:
                 assistant += f"I have access to a SQLite database with inventory data (tables like AMAS, IMAS, etc.). Error retrieving schema: {e}"
             assistant += "\n\nI can answer questions about stock, inventory, quantities, and help execute SQL queries on the database."
-        elif not is_db_related(user_input):
-            assistant = "I can only answer questions about the database; please ask about data or request a SQL query."
         else:
-            with st.spinner("Loading — waiting for response..."):
-                db_answer = answer_inventory_query(user_input)
-                if db_answer is not None:
-                    assistant = db_answer
-                else:
-                    key = os.environ.get("OPENAI_API_KEY")
-                    if not key:
-                        st.error("OPENAI_API_KEY not set in environment")
+            structured_answer = answer_business_question(user_input)
+            if structured_answer:
+                assistant = structured_answer
+            elif not is_db_related(user_input):
+                assistant = "I can only answer questions about the database; please ask about data or request a SQL query."
+            else:
+                with st.spinner("Loading — waiting for response..."):
+                    db_answer = answer_inventory_query(user_input)
+                    if db_answer is not None:
+                        assistant = db_answer
                     else:
-                        try:
+                        key = os.environ.get("OPENAI_API_KEY")
+                        if not key:
+                            st.error("OPENAI_API_KEY not set in environment")
+                        else:
                             try:
-                                from openai import OpenAI
-                                client = OpenAI(api_key=key)
-                                use_new_sdk = True
-                            except Exception:
-                                import openai
-                                openai.api_key = key
-                                client = openai
-                                use_new_sdk = False
-
-                            msgs = []
-                            system_content = "You are a helpful assistant for database queries. Only answer user questions using the database data. If the user asks about anything outside the database, politely refuse with: 'I can only answer questions about the database; please ask about data or request a SQL query.'"
-                            if include_db:
-                                snap = build_db_snapshot()
-                                system_content += f"\n\nDB_SNAPSHOT:\n{snap}"
-                            msgs.append({"role": "system", "content": system_content})
-                            msgs.append({"role": "user", "content": user_input})
-
-                            if use_new_sdk:
-                                resp = client.chat.completions.create(model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"), messages=msgs)
                                 try:
-                                    assistant = resp.choices[0].message.content
+                                    from openai import OpenAI
+                                    client = OpenAI(api_key=key)
+                                    use_new_sdk = True
                                 except Exception:
-                                    assistant = resp.choices[0].message["content"]
-                            else:
-                                resp = openai.ChatCompletion.create(model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"), messages=msgs)
-                                assistant = resp.choices[0].message.content
-                        except Exception as e:
-                            st.error(f"OpenAI API error: {e}")
-                            assistant = ""
+                                    import openai
+                                    openai.api_key = key
+                                    client = openai
+                                    use_new_sdk = False
+
+                                msgs = []
+                                system_content = "You are a helpful assistant for database queries. Only answer user questions using the database data. If the user asks about anything outside the database, politely refuse with: 'I can only answer questions about the database; please ask about data or request a SQL query.'"
+                                if include_db:
+                                    snap = build_db_snapshot()
+                                    system_content += f"\n\nDB_SNAPSHOT:\n{snap}"
+                                msgs.append({"role": "system", "content": system_content})
+                                msgs.append({"role": "user", "content": user_input})
+
+                                if use_new_sdk:
+                                    resp = client.chat.completions.create(model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"), messages=msgs)
+                                    try:
+                                        assistant = resp.choices[0].message.content
+                                    except Exception:
+                                        assistant = resp.choices[0].message["content"]
+                                else:
+                                    resp = openai.ChatCompletion.create(model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"), messages=msgs)
+                                    assistant = resp.choices[0].message.content
+                            except Exception as e:
+                                st.error(f"OpenAI API error: {e}")
+                                assistant = ""
 
         with st.chat_message("assistant"):
             st.write(assistant)
@@ -317,6 +361,32 @@ elif page == "History":
             with st.chat_message("assistant"):
                 st.write(item['assistant'])
             st.divider()
+
+elif page == "Explore Data":
+    st.header("Explore Database Tables")
+    tables = get_table_names()
+    if not tables:
+        st.warning("No tables found in the database. Initialize or refresh the DB to continue.")
+    else:
+        selected = st.selectbox("Choose a table", options=tables)
+        st.subheader("Table schema")
+        schema = get_table_schema(selected)
+        if schema:
+            st.markdown("\n".join(f"- {col}" for col in schema))
+        else:
+            st.info("Schema information is not available for this table.")
+
+        st.subheader("Preview rows")
+        limit = st.slider("Rows to show", min_value=5, max_value=200, value=25, step=5)
+        where = st.text_input("WHERE clause (optional)", placeholder="e.g. CITY LIKE '%Delhi%' AND STATE = 'Bihar'")
+        try:
+            cols, rows = fetch_table_rows(selected, limit=limit, where_clause=where)
+            if rows:
+                st.dataframe([dict(zip(cols, row)) for row in rows])
+            else:
+                st.info("Query returned no rows.")
+        except Exception as e:
+            st.error(f"Error fetching rows: {e}")
 
 elif page == "Database Query":
     st.header("AI Database Query Assistant")
